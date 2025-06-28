@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 const YouTubeSummarizer = () => {
   const [link, setLink] = useState('');
@@ -8,6 +9,14 @@ const YouTubeSummarizer = () => {
   const iframeRef = useRef(null);
   const [showVideo, setShowVideo] = useState(false);
   const [score, setScore] = useState(0);
+  
+  // Audio detection state
+  const [audioDetectionActive, setAudioDetectionActive] = useState(false);
+  const [emotionResult, setEmotionResult] = useState(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const microphoneRef = useRef(null);
+  const animationFrameRef = useRef(null);
 
   useEffect(() => {
     const eventSource = new EventSource("http://localhost:5000/score_feed");
@@ -66,6 +75,81 @@ const YouTubeSummarizer = () => {
     }
   };
 
+  // Audio detection functions
+  const startAudioDetection = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      microphoneRef.current = audioContextRef.current.createMediaStreamSource(stream);
+      
+      analyserRef.current.fftSize = 2048;
+      microphoneRef.current.connect(analyserRef.current);
+      
+      setAudioDetectionActive(true);
+      processAudioFrame();
+      
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      alert('Could not access microphone. Please check permissions.');
+    }
+  };
+
+  const stopAudioDetection = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+    
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    
+    setAudioDetectionActive(false);
+    setEmotionResult(null);
+  };
+
+  const processAudioFrame = async () => {
+    if (!analyserRef.current || !audioDetectionActive) return;
+
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyserRef.current.getByteFrequencyData(dataArray);
+
+    // Convert audio data to format expected by backend
+    const audioFrame = {
+      data: Array.from(dataArray),
+      sample_rate: audioContextRef.current.sampleRate,
+      timestamp: Date.now()
+    };
+
+    try {
+      const response = await fetch('http://localhost:5000/api/audio-emotion-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_frame: audioFrame }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setEmotionResult(result);
+      }
+    } catch (error) {
+      console.error('Error processing audio:', error);
+    }
+
+    if (audioDetectionActive) {
+      animationFrameRef.current = requestAnimationFrame(processAudioFrame);
+    }
+  };
+
+  // Cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      stopAudioDetection();
+    };
+  }, []);
+
   const videoId = getVideoId(link);
 
   return (
@@ -91,6 +175,45 @@ const YouTubeSummarizer = () => {
           >
             {loading ? 'Processing...' : 'Track & Summarize'}
           </button>
+        </div>
+
+        {/* Audio Detection Controls */}
+        <div className="audio-detection-section">
+          <h3 className="audio-title">Audio Emotion Detection</h3>
+          <div className="audio-controls">
+            <button
+              onClick={startAudioDetection}
+              disabled={audioDetectionActive}
+              className={`audio-btn start-btn ${audioDetectionActive ? 'disabled' : ''}`}
+            >
+              {audioDetectionActive ? 'Detection Active' : 'Start Audio Detection'}
+            </button>
+            <button
+              onClick={stopAudioDetection}
+              disabled={!audioDetectionActive}
+              className={`audio-btn stop-btn ${!audioDetectionActive ? 'disabled' : ''}`}
+            >
+              Stop Audio Detection
+            </button>
+          </div>
+          
+          {emotionResult && (
+            <div className="emotion-results">
+              <h4 className="emotion-title">Current Emotion Analysis</h4>
+              <div className="emotion-display">
+                <div className={`emotion-badge ${emotionResult.emotion}`}>
+                  {emotionResult.emotion.toUpperCase()}
+                </div>
+                <div className="emotion-details">
+                  <p><strong>Confidence:</strong> {(emotionResult.confidence * 100).toFixed(1)}%</p>
+                  <p><strong>Concentration:</strong> {(emotionResult.concentration * 100).toFixed(1)}%</p>
+                  <p className={`distraction-status ${emotionResult.distracted ? 'distracted' : 'focused'}`}>
+                    <strong>Status:</strong> {emotionResult.distracted ? 'Distracted' : 'Focused'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {videoId && (
@@ -136,7 +259,7 @@ const YouTubeSummarizer = () => {
         {summary && (
           <div className="summary-section">
             <h3 className="summary-title">Summary</h3>
-            <p className="summary-text">{summary}</p>
+            <p className="summary-text"><ReactMarkdown>{summary}</ReactMarkdown></p>
           </div>
         )}
 
@@ -157,6 +280,105 @@ const YouTubeSummarizer = () => {
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        .audio-detection-section {
+          margin: 20px 0;
+          padding: 20px;
+          border: 2px solid #e0e0e0;
+          border-radius: 10px;
+          background: #f9f9f9;
+        }
+
+        .audio-title {
+          color: #333;
+          margin-bottom: 15px;
+          font-size: 1.2em;
+        }
+
+        .audio-controls {
+          display: flex;
+          gap: 15px;
+          margin-bottom: 20px;
+        }
+
+        .audio-btn {
+          padding: 12px 24px;
+          border: none;
+          border-radius: 6px;
+          font-weight: bold;
+          cursor: pointer;
+          transition: all 0.3s ease;
+        }
+
+        .start-btn {
+          background: #4CAF50;
+          color: white;
+        }
+
+        .start-btn:hover:not(.disabled) {
+          background: #45a049;
+        }
+
+        .stop-btn {
+          background: #f44336;
+          color: white;
+        }
+
+        .stop-btn:hover:not(.disabled) {
+          background: #da190b;
+        }
+
+        .disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .emotion-results {
+          background: white;
+          padding: 15px;
+          border-radius: 8px;
+          border: 1px solid #ddd;
+        }
+
+        .emotion-title {
+          margin-bottom: 10px;
+          color: #555;
+        }
+
+        .emotion-display {
+          display: flex;
+          align-items: center;
+          gap: 20px;
+        }
+
+        .emotion-badge {
+          padding: 8px 16px;
+          border-radius: 20px;
+          font-weight: bold;
+          color: white;
+        }
+
+        .emotion-badge.focused { background: #4CAF50; }
+        .emotion-badge.engaged { background: #2196F3; }
+        .emotion-badge.excited { background: #FF9800; }
+        .emotion-badge.calm { background: #9C27B0; }
+        .emotion-badge.distracted { background: #f44336; }
+        .emotion-badge.bored { background: #795548; }
+
+        .emotion-details p {
+          margin: 5px 0;
+          font-size: 0.9em;
+        }
+
+        .distraction-status.distracted {
+          color: #f44336;
+        }
+
+        .distraction-status.focused {
+          color: #4CAF50;
+        }
+      `}</style>
     </div>
   );
 };
